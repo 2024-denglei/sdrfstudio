@@ -1,0 +1,11 @@
+{
+  "name": "sdrf-studio",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "web:dev": "npm --prefix apps/web run dev",
+    "web:build": "npm --prefix apps/web run build",
+    "api:dev": "uvicorn app.main:app --reload --app-dir apps/api",
+    "test:api": "pytest apps/api/tests"
+  }
+}
