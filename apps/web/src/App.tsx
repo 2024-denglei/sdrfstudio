@@ -767,7 +767,7 @@ function StepContent({
   if (step === "ai-analysis") return <AnalysisStep project={project} projectId={projectId} files={files} analysis={analysis} table={table} refresh={refresh} />;
   if (step === "blueprint") return <BlueprintStep projectId={projectId} analysis={analysis} table={table} refresh={refresh} />;
   if (step === "samples") return <SamplesStep projectId={projectId} analysis={analysis} table={table} refresh={refresh} />;
-  if (step === "files") return <FilesStep projectId={projectId} table={table} files={files} refresh={refresh} />;
+  if (step === "files") return <FilesStep projectId={projectId} analysis={analysis} table={table} files={files} refresh={refresh} />;
   if (step === "ai-review") return <AiReviewStep projectId={projectId} analysis={analysis} table={table} files={files} />;
   if (step === "validation") return <ValidationStep projectId={projectId} table={table} refresh={refresh} />;
   if (step === "export") return <ExportStep projectId={projectId} table={table} />;
@@ -8827,6 +8827,7 @@ type FilesTechnicalAiInput = {
   task: string;
   project_id: string;
   standard_reference: string;
+  project_evidence: Record<string, unknown>;
   current_sdrf_table: Record<string, unknown>;
   uploaded_files: Record<string, unknown>[];
   current_technical_state: Record<string, unknown>;
@@ -8994,8 +8995,41 @@ function matchTechnicalLabelOption(labelType: string, labels: string[]): Technic
   ));
 }
 
+function buildFilesProjectEvidence(analysis?: Awaited<ReturnType<typeof api.getAnalysis>>): Record<string, unknown> {
+  const evidenceItems = (analysis?.evidences ?? [])
+    .filter((item) => {
+      const haystack = stringifyCompact([item.source_type, item.source_ref, item.field, item.value, item.payload]).toLowerCase();
+      return !haystack.includes("sdrf.tsv") && !haystack.includes(".sdrf");
+    })
+    .slice(0, 30)
+    .map((item) => ({
+      source_type: item.source_type,
+      source_ref: item.source_ref,
+      field: item.field,
+      value: truncateForPrompt(item.value, 1200),
+      confidence: item.confidence,
+      payload_summary: stringifyCompact(stripExistingSdrfPayload(item.payload)).slice(0, 2400),
+    }));
+  const summary = analysis?.summary ?? {};
+  return {
+    evidence_count: analysis?.evidences?.length ?? 0,
+    open_questions: (analysis?.questions ?? [])
+      .filter((item) => item.status === "open")
+      .slice(0, 12)
+      .map((item) => ({
+        step: item.step,
+        title: item.title,
+        message: truncateForPrompt(item.message, 600),
+        severity: item.severity,
+      })),
+    analysis_summary: stringifyCompact(stripExistingSdrfPayload(summary)).slice(0, 1200),
+    evidence_items: evidenceItems,
+  };
+}
+
 function buildFilesTechnicalAiInput({
   projectId,
+  analysis,
   table,
   files,
   labelOption,
@@ -9008,6 +9042,7 @@ function buildFilesTechnicalAiInput({
   drafts,
 }: {
   projectId: string;
+  analysis?: Awaited<ReturnType<typeof api.getAnalysis>>;
   table?: Awaited<ReturnType<typeof api.getSdrfTable>>;
   files: Awaited<ReturnType<typeof api.listFiles>>;
   labelOption: TechnicalLabelOption;
@@ -9023,6 +9058,7 @@ function buildFilesTechnicalAiInput({
     task: "Generate editable SDRF-Proteomics data-file technical attributes for the Files page. Return strict JSON only.",
     project_id: projectId,
     standard_reference: "SDRF-Proteomics v1.1.0 / quantMS SDRF specification",
+    project_evidence: buildFilesProjectEvidence(analysis),
     current_sdrf_table: {
       headers: table?.headers ?? [],
       row_count: table?.rows?.length ?? 0,
@@ -9084,9 +9120,11 @@ function buildFilesTechnicalAiRequestPayload(input: FilesTechnicalAiInput, confi
         role: "system",
         content: [
           "You generate SDRF-Proteomics data-file technical attributes for an editable Files page.",
-          "Use only the provided SDRF rows, uploaded files, and current editor state.",
+          "Use only the provided project evidence, SDRF rows, uploaded files, current editor state, and current file mappings.",
+          "Project evidence may include PRIDE title, description, instruments, publications, protocols, modifications, and file-list summaries.",
+          "Use project evidence to infer instrument, acquisition method, cleavage agent, labels, fractions, and modification parameters when SDRF rows or uploaded files are sparse.",
           "Return strict JSON matching the requested schema.",
-          "Do not invent raw file names that are not in current_file_mappings or uploaded_files.",
+          "Do not invent raw file names that are not in current_file_mappings, uploaded_files, current_sdrf_table, or project evidence.",
           "If evidence is missing for instrument, acquisition method, cleavage agent, label, fraction, or replicate, use the current value or 'not available' and add a warning.",
         ].join("\n"),
       },
@@ -9216,11 +9254,13 @@ function mergeTechnicalConfigIntoTable({
 
 function FilesStep({
   projectId,
+  analysis,
   table,
   files,
   refresh,
 }: {
   projectId: string;
+  analysis?: Awaited<ReturnType<typeof api.getAnalysis>>;
   table?: Awaited<ReturnType<typeof api.getSdrfTable>>;
   files: Awaited<ReturnType<typeof api.listFiles>>;
   refresh: () => void;
@@ -9289,6 +9329,7 @@ function FilesStep({
   const selectedModificationIds = new Set(modifications.map((modification) => modification.id));
   const filesAiInput = useMemo(() => buildFilesTechnicalAiInput({
     projectId,
+    analysis,
     table: technicalSourceTable,
     files,
     labelOption: activeLabelOption,
@@ -9299,7 +9340,7 @@ function FilesStep({
     cleavageAgent,
     modifications,
     drafts,
-  }), [acquisitionMethod, activeLabelOption, cleavageAgent, drafts, files, fractionInput, fractionated, instrument, modifications, projectId, technicalSourceTable]);
+  }), [acquisitionMethod, activeLabelOption, analysis, cleavageAgent, drafts, files, fractionInput, fractionated, instrument, modifications, projectId, technicalSourceTable]);
   const applyFilesAiDraft = useCallback((draft: FilesTechnicalAiDraft) => {
     const nextLabelOption = matchTechnicalLabelOption(draft.labelType, draft.labels);
     if (nextLabelOption) setLabelOptionId(nextLabelOption.id);

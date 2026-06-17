@@ -4086,6 +4086,80 @@ describe("FilesStep technical configuration", () => {
     });
   });
 
+  it("includes PRIDE project evidence in the Files AI prompt when no SDRF rows or uploads are available", async () => {
+    window.localStorage.setItem("sdrf-studio-ai-config", JSON.stringify({
+      model: "test-model",
+    }));
+    const savePrompt = vi.spyOn(api, "saveSampleAiPrompt").mockResolvedValue({
+      status: "saved",
+      filename: "files-ai.json",
+      path: "storage/project-1/debug/sample-ai-prompts/files-ai.json",
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              summary: "AI used project metadata.",
+              acquisition_method: "DDA",
+              instrument: "LTQ Orbitrap Velos",
+              cleavage_agent: "Trypsin",
+              file_mappings: [],
+              warnings: [],
+            }),
+          },
+        }],
+      }),
+    }));
+
+    renderAppAtStep("files", {
+      analysis: {
+        evidences: [{
+          id: "evidence-project",
+          source_type: "pride",
+          source_ref: "PXD000070",
+          field: "project metadata",
+          value: "Plasmodium falciparum schizont phosphoproteome",
+          confidence: 0.95,
+          status: "accepted",
+          payload: {
+            project: {
+              accession: "PXD000070",
+              title: "Plasmodium falciparum schizont phosphoproteome",
+              description: "Phosphopeptides were analysed using ETD and CID. All searches used Mascot with trypsin and variable Oxidation (M), Deamidated (NQ), Carbamidomethyl (C), and Phospho ST.",
+              instruments: ["LTQ Orbitrap Velos"],
+              modifications: "monohydroxylated residue phosphorylated residue acetylated residue iodoacetamide derivatized residue deamidated residue",
+            },
+          },
+        }],
+        questions: [],
+        blueprint: { nodes: [], edges: [] },
+        summary: {},
+      },
+      files: [],
+      table: {
+        id: "table-1",
+        project_id: "project-1",
+        headers: ["source name"],
+        rows: [],
+        column_metadata: {},
+        dirty: false,
+        validation_state: {},
+      },
+    });
+
+    await userEvent.click(await screen.findByRole("button", { name: "Run AI" }));
+
+    await waitFor(() => expect(savePrompt).toHaveBeenCalled());
+    const savedPayload = savePrompt.mock.calls[0][1] as { messages: Array<{ content: string }> };
+    const filesAiInput = JSON.parse(savedPayload.messages[1].content);
+    const projectEvidence = JSON.stringify(filesAiInput.project_evidence ?? "");
+    expect(projectEvidence).toContain("LTQ Orbitrap Velos");
+    expect(projectEvidence).toContain("Phosphopeptides were analysed using ETD and CID");
+    expect(projectEvidence).toContain("monohydroxylated residue");
+  });
+
   it("keeps Files AI draft available after navigating away until the user applies it", async () => {
     window.localStorage.setItem("sdrf-studio-ai-config", JSON.stringify({
       baseUrl: "https://example.test/chat",
